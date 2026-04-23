@@ -1,0 +1,14 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 42,
+    "title": "Add rate limiting to the API handler",
+    "body": "We need to add rate limiting to prevent abuse. Should support per-IP limits and return 429 with a Retry-After header. Should be configurable via env vars."
+  },
+  "repository": {
+    "name": "my-service",
+    "owner": {
+      "login": "my-org"
+    }
+  }
+}

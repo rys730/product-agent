@@ -1,0 +1,19 @@
+# Environment variables — never commit real secrets
+.env
+
+# Compiled binary
+product-agent
+
+# Go build cache
+*.test
+*.out
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
