@@ -83,11 +83,24 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only act on newly opened issues.
-	if action := extractAction(body); action != "opened" {
+	// Only act on configured actions (default: "opened").
+	action := extractAction(body)
+	if !h.cfg.WebhookActions[action] {
 		log.Printf("[handler] request_id=%s ignoring action: %s", requestID, action)
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+
+	// For "edited" actions, skip if the change is not significant.
+	if action == "edited" {
+		oldText := parseOldText(body)
+		newText := issue.Title + " " + issue.Body
+		if !isSignificantEdit(oldText, newText) {
+			log.Printf("[handler] request_id=%s edit not significant, skipping", requestID)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		log.Printf("[handler] request_id=%s significant edit detected, processing", requestID)
 	}
 
 	log.Printf("[handler] request_id=%s processing issue %s/%s#%d: %q",

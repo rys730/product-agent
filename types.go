@@ -52,4 +52,13 @@ type webhookPayload struct {
 			Login string `json:"login"`
 		} `json:"owner"`
 	} `json:"repository"`
+	// Changes is populated by GitHub on "edited" actions.
+	Changes struct {
+		Title struct {
+			From string `json:"from"`
+		} `json:"title"`
+		Body struct {
+			From string `json:"from"`
+		} `json:"body"`
+	} `json:"changes"`
 }

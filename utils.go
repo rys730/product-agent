@@ -28,6 +28,20 @@ func parseExtensions(raw string) []string {
 	return out
 }
 
+// parseActions splits a comma-separated actions string into a set (map).
+// e.g. "opened,edited" → {"opened": true, "edited": true}
+func parseActions(raw string) map[string]bool {
+	parts := strings.Split(raw, ",")
+	out := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		a := strings.ToLower(strings.TrimSpace(p))
+		if a != "" {
+			out[a] = true
+		}
+	}
+	return out
+}
+
 // loadDotEnv reads a .env file and sets any variables not already present in
 // the environment. It is a no-op if the file does not exist.
 // Rules:
@@ -189,4 +203,27 @@ func truncateLines(content string, maxLines int) string {
 	truncated := lines[:maxLines]
 	truncated = append(truncated, fmt.Sprintf("... (%d lines truncated)", len(lines)-maxLines))
 	return strings.Join(truncated, "\n")
+}
+
+// minNewKeywords is the minimum number of new keywords required to consider
+// an issue edit significant enough to reprocess.
+const minNewKeywords = 3
+
+// isSignificantEdit returns true if the change between oldText and newText
+// introduces enough new keywords to warrant reprocessing.
+// It compares the keyword sets of both texts and counts keywords that are
+// present in the new text but absent in the old.
+func isSignificantEdit(oldText, newText string) bool {
+	oldKws := make(map[string]bool)
+	for _, k := range ExtractKeywords(oldText) {
+		oldKws[k] = true
+	}
+
+	newCount := 0
+	for _, k := range ExtractKeywords(newText) {
+		if !oldKws[k] {
+			newCount++
+		}
+	}
+	return newCount >= minNewKeywords
 }

@@ -1,13 +1,13 @@
 package main
 
 import (
-"bytes"
-"context"
-"encoding/json"
-"fmt"
-"io"
-"log"
-"net/http"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
 )
 
 const githubAPIBase = "https://api.github.com"
@@ -52,10 +52,20 @@ func ParseWebhookPayload(body []byte) (GitHubIssue, error) {
 	}, nil
 }
 
+// parseOldText extracts the previous title+body from the "changes" field of an
+// edited webhook payload. Returns empty string if not an edit or no changes present.
+func parseOldText(body []byte) string {
+	var p webhookPayload
+	if err := json.Unmarshal(body, &p); err != nil {
+		return ""
+	}
+	return p.Changes.Title.From + " " + p.Changes.Body.From
+}
+
 // PostComment posts a Markdown comment on the given issue.
 func (g *GitHubClient) PostComment(ctx context.Context, issue GitHubIssue, comment string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments",
-githubAPIBase, issue.Owner, issue.Repo, issue.Number)
+		githubAPIBase, issue.Owner, issue.Repo, issue.Number)
 
 	body, err := json.Marshal(map[string]string{"body": comment})
 	if err != nil {

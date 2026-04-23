@@ -22,6 +22,9 @@ type Config struct {
 	// "local" (default) scans REPO_PATH on disk.
 	// "github" uses the GitHub Trees + Contents API — no local clone needed.
 	RetrieveMode string
+	// WebhookActions is the set of issue actions that trigger the pipeline.
+	// e.g. {"opened": true, "edited": true}
+	WebhookActions map[string]bool
 	// OpenRouter optional headers
 	OpenRouterReferer string
 	OpenRouterTitle   string
@@ -39,6 +42,7 @@ func loadConfig() (*Config, error) {
 		Port:              getEnvOrDefault("PORT", "8080"),
 		RepoExtensions:    parseExtensions(getEnvOrDefault("REPO_EXTENSIONS", ".go,.ts,.js,.py,.java,.rs,.rb,.cs,.cpp,.c")),
 		RetrieveMode:      getEnvOrDefault("RETRIEVE_MODE", "local"),
+		WebhookActions:    parseActions(getEnvOrDefault("WEBHOOK_ACTIONS", "opened")),
 		OpenRouterReferer: os.Getenv("OPENROUTER_REFERER"),
 		OpenRouterTitle:   getEnvOrDefault("OPENROUTER_TITLE", "product-agent"),
 	}
@@ -84,6 +88,7 @@ func main() {
 	addr := ":" + cfg.Port
 	log.Printf("starting server on %s", addr)
 	log.Printf("retrieve mode: %s", cfg.RetrieveMode)
+	log.Printf("webhook actions: %v", cfg.WebhookActions)
 	log.Printf("repo path: %s", cfg.RepoPath)
 	log.Printf("model: %s", cfg.OpenAIModel)
 

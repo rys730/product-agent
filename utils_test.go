@@ -192,3 +192,44 @@ func TestLoadDotEnv_MissingFileIsNoop(t *testing.T) {
 	// Should not panic or log an error — just silently skip.
 	loadDotEnv("/tmp/this_file_does_not_exist_product_agent.env")
 }
+
+// ── isSignificantEdit ─────────────────────────────────────────────────────────
+
+func TestIsSignificantEdit_SignificantChange(t *testing.T) {
+	old := "add logging to the server"
+	new := "add logging to the server with structured json output rotation and alerting support"
+	if !isSignificantEdit(old, new) {
+		t.Error("expected significant edit (many new keywords)")
+	}
+}
+
+func TestIsSignificantEdit_TrivialChange(t *testing.T) {
+	old := "add logging to the server startup"
+	new := "add logging to the server startup."  // just a punctuation fix
+	if isSignificantEdit(old, new) {
+		t.Error("expected insignificant edit (no new keywords)")
+	}
+}
+
+func TestIsSignificantEdit_Typofix(t *testing.T) {
+	old := "implement rate limitting on the api handler"
+	new := "implement rate limiting on the api handler"  // typo fix
+	if isSignificantEdit(old, new) {
+		t.Error("expected insignificant edit (typo fix introduces < 3 new keywords)")
+	}
+}
+
+func TestIsSignificantEdit_NewRequirements(t *testing.T) {
+	old := "add authentication to the api"
+	new := "add authentication to the api with jwt tokens refresh expiry blacklist redis storage"
+	if !isSignificantEdit(old, new) {
+		t.Error("expected significant edit (new technical requirements added)")
+	}
+}
+
+func TestIsSignificantEdit_EmptyOld(t *testing.T) {
+	// Simulates "opened" with no body, then edited with full content.
+	if !isSignificantEdit("", "implement rate limiting with token bucket algorithm per ip address") {
+		t.Error("expected significant edit when old text is empty")
+	}
+}
