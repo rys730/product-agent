@@ -18,10 +18,30 @@ const schemaDefinition = `{
 }`
 
 // BuildPrompt constructs the full LLM prompt from the issue and retrieved code snippets.
-func BuildPrompt(issue GitHubIssue, snippets []CodeSnippet) string {
+// repoTree and readme are optional; pass empty strings to omit them.
+// codebaseIndex is optional markdown content describing the codebase; pass empty string to omit.
+func BuildPrompt(issue GitHubIssue, snippets []CodeSnippet, repoTree, readme, codebaseIndex string) string {
 	var sb strings.Builder
 
 	sb.WriteString("You are a senior software engineer. Your job is to read a GitHub issue and relevant code context, then produce a strict engineering specification.\n\n")
+
+	if readme != "" {
+		sb.WriteString("## Repository README\n\n")
+		sb.WriteString(readme)
+		sb.WriteString("\n\n")
+	}
+
+	if repoTree != "" {
+		sb.WriteString("## Repository File Tree\n\n```\n")
+		sb.WriteString(repoTree)
+		sb.WriteString("```\n\n")
+	}
+
+	if codebaseIndex != "" {
+		sb.WriteString("## Codebase Index\n\n")
+		sb.WriteString(codebaseIndex)
+		sb.WriteString("\n\n")
+	}
 
 	sb.WriteString("## GitHub Issue\n\n")
 	fmt.Fprintf(&sb, "**Title:** %s\n\n", issue.Title)

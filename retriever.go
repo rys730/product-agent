@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -79,12 +80,8 @@ func RetrieveRelevantFiles(repoPath string, keywords []string, extensions []stri
 		return nil, err
 	}
 
-	// Sort descending by score (simple insertion sort — list is small).
-	for i := 1; i < len(candidates); i++ {
-		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
-			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
-		}
-	}
+	// Sort descending by score.
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].score > candidates[j].score })
 
 	// Take top N.
 	if len(candidates) > maxResults {
@@ -112,4 +109,62 @@ func RetrieveRelevantFiles(repoPath string, keywords []string, extensions []stri
 	}
 
 	return snippets, nil
+}
+
+// BuildRepoTree returns an indented directory/file listing of files whose
+// extension is in the allowed set, rooted at repoPath.
+func BuildRepoTree(repoPath string, extensions []string) string {
+	extSet := make(map[string]bool, len(extensions))
+	for _, e := range extensions {
+		extSet[strings.ToLower(e)] = true
+	}
+
+	var sb strings.Builder
+	_ = filepath.WalkDir(repoPath, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !extSet[strings.ToLower(filepath.Ext(d.Name()))] {
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoPath, path)
+		if relErr != nil {
+			rel = path
+		}
+		// indent by depth
+		depth := strings.Count(rel, string(filepath.Separator))
+		sb.WriteString(strings.Repeat("  ", depth))
+		sb.WriteString(d.Name())
+		sb.WriteByte('\n')
+		return nil
+	})
+	return sb.String()
+}
+
+// ReadREADME reads the README.md at repoPath and returns up to maxLines lines.
+// Returns empty string if not found.
+func ReadREADME(repoPath string, maxLines int) string {
+	for _, name := range []string{"README.md", "readme.md", "Readme.md"} {
+		data, err := os.ReadFile(filepath.Join(repoPath, name))
+		if err == nil {
+			return truncateLines(string(data), maxLines)
+		}
+	}
+	return ""
+}
+
+// ReadProductAgentMD reads PRODUCT-AGENT.md from the repo root.
+// Returns empty string if not found.
+func ReadProductAgentMD(repoPath string) string {
+	data, err := os.ReadFile(filepath.Join(repoPath, "PRODUCT-AGENT.md"))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

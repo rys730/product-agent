@@ -33,8 +33,8 @@ func NewGitHubRetriever(token string, extensions []string, branch string) *GitHu
 }
 
 // Retrieve implements the Retriever interface using the GitHub API.
-// It lists all files in the repo, scores them by keyword frequency in the
-// file path (cheap — no content fetch), then fetches content for the top N.
+// Phase 1: score all paths by keyword matches in the path → take top 20.
+// Phase 2: fetch content for those 20, re-score by content frequency → top 5.
 func (g *GitHubRetriever) Retrieve(ctx context.Context, issue GitHubIssue, keywords []string) ([]CodeSnippet, error) {
 	// Build allowed extension set.
 	extSet := make(map[string]bool, len(g.extensions))
@@ -51,8 +51,9 @@ func (g *GitHubRetriever) Retrieve(ctx context.Context, issue GitHubIssue, keywo
 
 	// 2. Filter by extension and score by keyword matches in the path.
 	type scored struct {
-		path  string
-		score int
+		path    string
+		score   int
+		content string
 	}
 	var candidates []scored
 	for _, p := range paths {
@@ -65,37 +66,61 @@ func (g *GitHubRetriever) Retrieve(ctx context.Context, issue GitHubIssue, keywo
 		for _, kw := range keywords {
 			score += strings.Count(lower, kw)
 		}
-		// Always include files with a score; if too few match, we'll fetch
-		// the first N extension-matching files as fallback below.
 		candidates = append(candidates, scored{path: p, score: score})
 	}
 
-	// Sort descending by score.
+	// Sort descending by path score.
 	for i := 1; i < len(candidates); i++ {
 		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
 			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
 		}
 	}
 
-	// Take top N, ensuring we always send something even if scores are zero.
+	// Pre-filter: take top 20 by path score for content fetching.
+	const preFilterN = 20
+	if len(candidates) > preFilterN {
+		candidates = candidates[:preFilterN]
+	}
+
+	// 3. Fetch content for each candidate and re-score by content frequency.
+	for i := range candidates {
+		content, err := g.fetchContent(ctx, issue.Owner, issue.Repo, candidates[i].path)
+		if err != nil {
+			log.Printf("[retriever/gh] skipping %s: %v", candidates[i].path, err)
+			continue
+		}
+		candidates[i].content = content
+		lower := strings.ToLower(content)
+		score := 0
+		for _, kw := range keywords {
+			score += strings.Count(lower, kw)
+		}
+		candidates[i].score = score
+		log.Printf("[retriever/gh] content-scored %s (score=%d)", candidates[i].path, score)
+	}
+
+	// Re-sort by content score.
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
+
+	// Take top N.
 	if len(candidates) > maxResults {
 		candidates = candidates[:maxResults]
 	}
 
-	// 3. Fetch content for each candidate.
 	snippets := make([]CodeSnippet, 0, len(candidates))
 	for _, c := range candidates {
-		content, err := g.fetchContent(ctx, issue.Owner, issue.Repo, c.path)
-		if err != nil {
-			log.Printf("[retriever/gh] skipping %s: %v", c.path, err)
+		if c.content == "" {
 			continue
 		}
-		content = truncateLines(content, maxFileLines)
 		snippets = append(snippets, CodeSnippet{
 			FilePath: c.path,
-			Content:  content,
+			Content:  truncateLines(c.content, maxFileLines),
 		})
-		log.Printf("[retriever/gh] fetched %s (score=%d)", c.path, c.score)
+		log.Printf("[retriever/gh] selected %s (score=%d)", c.path, c.score)
 	}
 
 	return snippets, nil
@@ -220,4 +245,24 @@ func fileExt(path string) string {
 		}
 	}
 	return ""
+}
+
+// FetchREADME fetches the repository README via the GitHub Contents API.
+// Returns empty string if not found or on error.
+func (g *GitHubRetriever) FetchREADME(ctx context.Context, owner, repo string) string {
+	content, err := g.fetchContent(ctx, owner, repo, "README.md")
+	if err != nil {
+		return ""
+	}
+	return truncateLines(content, 100)
+}
+
+// FetchProductAgentMD fetches PRODUCT-AGENT.md from the repo root via the GitHub Contents API.
+// Returns empty string if not found or on error.
+func (g *GitHubRetriever) FetchProductAgentMD(ctx context.Context, owner, repo string) string {
+	content, err := g.fetchContent(ctx, owner, repo, "PRODUCT-AGENT.md")
+	if err != nil {
+		return ""
+	}
+	return content
 }

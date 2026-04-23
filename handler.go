@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -99,24 +100,31 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// has already been processed before. If no agent comment exists yet,
 	// treat the edit as an implicit first-run and always process.
 	if action == "edited" {
-		ctx := r.Context()
-		hasComment, err := h.github.HasAgentComment(ctx, issue)
-		if err != nil {
-			log.Printf("[handler] request_id=%s could not check prior comments: %v — processing anyway", requestID, err)
-			hasComment = false
-		}
+		// Allow the author to force a re-run by including the trigger phrase.
+		forceRun := strings.Contains(issue.Body, "product-agent:comment")
 
-		if hasComment {
-			oldText := parseOldText(body)
-			newText := issue.Title + " " + issue.Body
-			if !isSignificantEdit(oldText, newText) {
-				log.Printf("[handler] request_id=%s edit not significant, skipping", requestID)
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			log.Printf("[handler] request_id=%s significant edit detected, processing", requestID)
+		if forceRun {
+			log.Printf("[handler] request_id=%s force trigger found in issue body, processing", requestID)
 		} else {
-			log.Printf("[handler] request_id=%s no prior agent comment — processing edited issue as first run", requestID)
+			ctx := r.Context()
+			hasComment, err := h.github.HasAgentComment(ctx, issue)
+			if err != nil {
+				log.Printf("[handler] request_id=%s could not check prior comments: %v — processing anyway", requestID, err)
+				hasComment = false
+			}
+
+			if hasComment {
+				oldText := parseOldText(body)
+				newText := issue.Title + " " + issue.Body
+				if !isSignificantEdit(oldText, newText) {
+					log.Printf("[handler] request_id=%s edit not significant, skipping", requestID)
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				log.Printf("[handler] request_id=%s significant edit detected, processing", requestID)
+			} else {
+				log.Printf("[handler] request_id=%s no prior agent comment — processing edited issue as first run", requestID)
+			}
 		}
 	}
 
@@ -151,11 +159,36 @@ func (h *Handler) process(ctx context.Context, requestID string, issue GitHubIss
 	}
 	log.Printf("[pipeline] request_id=%s retrieved %d file(s)", requestID, len(snippets))
 
-	// 3. Build the LLM prompt.
-	log.Printf("[pipeline] request_id=%s building prompt", requestID)
-	prompt := BuildPrompt(issue, snippets)
+	// 3. Build repo tree, README, and codebase index.
+	var repoTree, readme, codebaseIndex string
+	if h.cfg.RetrieveMode == "local" {
+		repoTree = BuildRepoTree(h.cfg.RepoPath, h.cfg.RepoExtensions)
+		readme = ReadREADME(h.cfg.RepoPath, 100)
+		codebaseIndex = ReadProductAgentMD(h.cfg.RepoPath)
+		if codebaseIndex != "" {
+			log.Printf("[pipeline] request_id=%s PRODUCT-AGENT.md loaded (%d chars)", requestID, len(codebaseIndex))
+		} else {
+			codebaseIndex = BuildCodebaseIndex(h.cfg.RepoPath, h.cfg.RepoExtensions)
+			log.Printf("[pipeline] request_id=%s no PRODUCT-AGENT.md, using auto-generated index (%d chars)", requestID, len(codebaseIndex))
+		}
+	} else {
+		if gr, ok := h.retriever.(*GitHubRetriever); ok {
+			readme = gr.FetchREADME(ctx, issue.Owner, issue.Repo)
+			codebaseIndex = gr.FetchProductAgentMD(ctx, issue.Owner, issue.Repo)
+			if codebaseIndex != "" {
+				log.Printf("[pipeline] request_id=%s PRODUCT-AGENT.md fetched from GitHub (%d chars)", requestID, len(codebaseIndex))
+			} else {
+				codebaseIndex = BuildCodebaseIndexFromSnippets(snippets)
+				log.Printf("[pipeline] request_id=%s no PRODUCT-AGENT.md in repo, using snippet index (%d chars)", requestID, len(codebaseIndex))
+			}
+		}
+	}
 
-	// 4. Call the LLM.
+	// 4. Build the LLM prompt.
+	log.Printf("[pipeline] request_id=%s building prompt", requestID)
+	prompt := BuildPrompt(issue, snippets, repoTree, readme, codebaseIndex)
+
+	// 5. Call the LLM.
 	log.Printf("[pipeline] request_id=%s calling LLM", requestID)
 	output, err := h.agent.RunAgent(ctx, prompt)
 	if err != nil {
