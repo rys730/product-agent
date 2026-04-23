@@ -33,8 +33,12 @@ func NewHandler(cfg *Config) *Handler {
 	var retriever Retriever
 	switch cfg.RetrieveMode {
 	case "github":
-		retriever = NewGitHubRetriever(cfg.GitHubToken, cfg.RepoExtensions)
-		log.Printf("[handler] using GitHub API retriever")
+		retriever = NewGitHubRetriever(cfg.GitHubToken, cfg.RepoExtensions, cfg.RepoBranch)
+		branch := cfg.RepoBranch
+		if branch == "" {
+			branch = "(default)"
+		}
+		log.Printf("[handler] using GitHub API retriever (branch: %s)", branch)
 	default:
 		retriever = NewLocalRetriever(cfg.RepoPath, cfg.RepoExtensions)
 		log.Printf("[handler] using local retriever (path: %s)", cfg.RepoPath)
@@ -91,16 +95,29 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For "edited" actions, skip if the change is not significant.
+	// For "edited" actions, apply significance check — but only if the issue
+	// has already been processed before. If no agent comment exists yet,
+	// treat the edit as an implicit first-run and always process.
 	if action == "edited" {
-		oldText := parseOldText(body)
-		newText := issue.Title + " " + issue.Body
-		if !isSignificantEdit(oldText, newText) {
-			log.Printf("[handler] request_id=%s edit not significant, skipping", requestID)
-			w.WriteHeader(http.StatusNoContent)
-			return
+		ctx := r.Context()
+		hasComment, err := h.github.HasAgentComment(ctx, issue)
+		if err != nil {
+			log.Printf("[handler] request_id=%s could not check prior comments: %v — processing anyway", requestID, err)
+			hasComment = false
 		}
-		log.Printf("[handler] request_id=%s significant edit detected, processing", requestID)
+
+		if hasComment {
+			oldText := parseOldText(body)
+			newText := issue.Title + " " + issue.Body
+			if !isSignificantEdit(oldText, newText) {
+				log.Printf("[handler] request_id=%s edit not significant, skipping", requestID)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			log.Printf("[handler] request_id=%s significant edit detected, processing", requestID)
+		} else {
+			log.Printf("[handler] request_id=%s no prior agent comment — processing edited issue as first run", requestID)
+		}
 	}
 
 	log.Printf("[handler] request_id=%s processing issue %s/%s#%d: %q",

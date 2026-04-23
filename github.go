@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 const githubAPIBase = "https://api.github.com"
@@ -94,4 +95,48 @@ func (g *GitHubClient) PostComment(ctx context.Context, issue GitHubIssue, comme
 
 	log.Printf("[github] comment posted on %s/%s#%d", issue.Owner, issue.Repo, issue.Number)
 	return nil
+}
+
+// agentCommentSignature is a string present in every comment we post.
+// Used to detect whether we've already processed an issue.
+const agentCommentSignature = "🤖 Product Agent"
+
+// HasAgentComment returns true if the issue already has a comment posted by
+// this agent (identified by agentCommentSignature).
+func (g *GitHubClient) HasAgentComment(ctx context.Context, issue GitHubIssue) (bool, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments?per_page=100",
+		githubAPIBase, issue.Owner, issue.Repo, issue.Number)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+g.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := g.http.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("list comments http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("github api error %d: %s", resp.StatusCode, string(b))
+	}
+
+	var comments []struct {
+		Body string `json:"body"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&comments); err != nil {
+		return false, fmt.Errorf("decode comments: %w", err)
+	}
+
+	for _, c := range comments {
+		if strings.Contains(c.Body, agentCommentSignature) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

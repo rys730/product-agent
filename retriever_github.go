@@ -1,15 +1,15 @@
 package main
 
 import (
-"context"
-"encoding/base64"
-"encoding/json"
-"fmt"
-"io"
-"log"
-"net/http"
-"strings"
-"time"
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"time"
 )
 
 // GitHubRetriever fetches repository files via the GitHub REST API.
@@ -17,14 +17,17 @@ import (
 type GitHubRetriever struct {
 	token      string
 	extensions []string
+	branch     string // empty = use repo's default branch
 	http       *http.Client
 }
 
 // NewGitHubRetriever creates a GitHubRetriever.
-func NewGitHubRetriever(token string, extensions []string) *GitHubRetriever {
+// If branch is empty the repo's default branch is used automatically.
+func NewGitHubRetriever(token string, extensions []string, branch string) *GitHubRetriever {
 	return &GitHubRetriever{
 		token:      token,
 		extensions: extensions,
+		branch:     branch,
 		http:       &http.Client{Timeout: 30 * time.Second},
 	}
 }
@@ -63,109 +66,115 @@ func (g *GitHubRetriever) Retrieve(ctx context.Context, issue GitHubIssue, keywo
 			score += strings.Count(lower, kw)
 		}
 		// Always include files with a score; if too few match, we'll fetch
-// the first N extension-matching files as fallback below.
-candidates = append(candidates, scored{path: p, score: score})
-}
+		// the first N extension-matching files as fallback below.
+		candidates = append(candidates, scored{path: p, score: score})
+	}
 
-// Sort descending by score.
-for i := 1; i < len(candidates); i++ {
-for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
-candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
-}
-}
+	// Sort descending by score.
+	for i := 1; i < len(candidates); i++ {
+		for j := i; j > 0 && candidates[j].score > candidates[j-1].score; j-- {
+			candidates[j], candidates[j-1] = candidates[j-1], candidates[j]
+		}
+	}
 
-// Take top N, ensuring we always send something even if scores are zero.
-if len(candidates) > maxResults {
-candidates = candidates[:maxResults]
-}
+	// Take top N, ensuring we always send something even if scores are zero.
+	if len(candidates) > maxResults {
+		candidates = candidates[:maxResults]
+	}
 
-// 3. Fetch content for each candidate.
-snippets := make([]CodeSnippet, 0, len(candidates))
-for _, c := range candidates {
-content, err := g.fetchContent(ctx, issue.Owner, issue.Repo, c.path)
-if err != nil {
-log.Printf("[retriever/gh] skipping %s: %v", c.path, err)
-continue
-}
-content = truncateLines(content, maxFileLines)
-snippets = append(snippets, CodeSnippet{
-FilePath: c.path,
-Content:  content,
-})
-log.Printf("[retriever/gh] fetched %s (score=%d)", c.path, c.score)
-}
+	// 3. Fetch content for each candidate.
+	snippets := make([]CodeSnippet, 0, len(candidates))
+	for _, c := range candidates {
+		content, err := g.fetchContent(ctx, issue.Owner, issue.Repo, c.path)
+		if err != nil {
+			log.Printf("[retriever/gh] skipping %s: %v", c.path, err)
+			continue
+		}
+		content = truncateLines(content, maxFileLines)
+		snippets = append(snippets, CodeSnippet{
+			FilePath: c.path,
+			Content:  content,
+		})
+		log.Printf("[retriever/gh] fetched %s (score=%d)", c.path, c.score)
+	}
 
-return snippets, nil
+	return snippets, nil
 }
 
 // listTree calls the Git Trees API (recursive) and returns all blob paths.
 func (g *GitHubRetriever) listTree(ctx context.Context, owner, repo string) ([]string, error) {
-// First, resolve the default branch SHA via the repo endpoint.
-repoURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
-repoResp, err := g.apiGet(ctx, repoURL)
-if err != nil {
-return nil, err
-}
-var repoInfo struct {
-DefaultBranch string `json:"default_branch"`
-}
-if err := json.Unmarshal(repoResp, &repoInfo); err != nil {
-return nil, fmt.Errorf("parse repo info: %w", err)
-}
-branch := repoInfo.DefaultBranch
-if branch == "" {
-branch = "main"
-}
+	branch := g.branch
 
-treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
-treeResp, err := g.apiGet(ctx, treeURL)
-if err != nil {
-return nil, err
-}
+	// If no branch configured, resolve the default branch via the repo endpoint.
+	if branch == "" {
+		repoURL := fmt.Sprintf("https://api.github.com/repos/%s/%s", owner, repo)
+		repoResp, err := g.apiGet(ctx, repoURL)
+		if err != nil {
+			return nil, err
+		}
+		var repoInfo struct {
+			DefaultBranch string `json:"default_branch"`
+		}
+		if err := json.Unmarshal(repoResp, &repoInfo); err != nil {
+			return nil, fmt.Errorf("parse repo info: %w", err)
+		}
+		branch = repoInfo.DefaultBranch
+		if branch == "" {
+			branch = "main"
+		}
+	}
 
-var tree struct {
-Tree []struct {
-Path string `json:"path"`
-Type string `json:"type"`
-} `json:"tree"`
-Truncated bool `json:"truncated"`
-}
-if err := json.Unmarshal(treeResp, &tree); err != nil {
-return nil, fmt.Errorf("parse tree: %w", err)
-}
-if tree.Truncated {
-log.Printf("[retriever/gh] warning: tree was truncated by GitHub (repo too large)")
-}
+	log.Printf("[retriever/gh] using branch: %s", branch)
 
-paths := make([]string, 0, len(tree.Tree))
-for _, node := range tree.Tree {
-if node.Type == "blob" {
-paths = append(paths, node.Path)
-}
-}
-return paths, nil
+	treeURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, branch)
+	treeResp, err := g.apiGet(ctx, treeURL)
+	if err != nil {
+		return nil, err
+	}
+
+	var tree struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+		} `json:"tree"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := json.Unmarshal(treeResp, &tree); err != nil {
+		return nil, fmt.Errorf("parse tree: %w", err)
+	}
+	if tree.Truncated {
+		log.Printf("[retriever/gh] warning: tree was truncated by GitHub (repo too large)")
+	}
+
+	paths := make([]string, 0, len(tree.Tree))
+	for _, node := range tree.Tree {
+		if node.Type == "blob" {
+			paths = append(paths, node.Path)
+		}
+	}
+	return paths, nil
 }
 
 // fetchContent retrieves and decodes a single file via the Contents API.
 func (g *GitHubRetriever) fetchContent(ctx context.Context, owner, repo, path string) (string, error) {
-url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", owner, repo, path)
-data, err := g.apiGet(ctx, url)
-if err != nil {
-return "", err
-}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", owner, repo, path)
+	data, err := g.apiGet(ctx, url)
+	if err != nil {
+		return "", err
+	}
 
-var file struct {
-Content  string `json:"content"`
-Encoding string `json:"encoding"`
-}
-if err := json.Unmarshal(data, &file); err != nil {
-return "", fmt.Errorf("parse content: %w", err)
-}
-if file.Encoding != "base64" {
-return "", fmt.Errorf("unexpected encoding: %s", file.Encoding)
-}
+	var file struct {
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		return "", fmt.Errorf("parse content: %w", err)
+	}
+	if file.Encoding != "base64" {
+		return "", fmt.Errorf("unexpected encoding: %s", file.Encoding)
+	}
 
-// GitHub's base64 includes newlines — strip them before decoding.
+	// GitHub's base64 includes newlines — strip them before decoding.
 	raw := strings.ReplaceAll(file.Content, "\n", "")
 	decoded, err := base64.StdEncoding.DecodeString(raw)
 	if err != nil {
