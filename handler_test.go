@@ -69,7 +69,7 @@ func TestHandlerWebhook_NonOpenedAction(t *testing.T) {
 func TestHandlerWebhook_OpenedReturnsAccepted(t *testing.T) {
 	cfg := &Config{GitHubToken: "t", OpenAIKey: "k", OpenAIBaseURL: "http://localhost", OpenAIModel: "m", RepoPath: t.TempDir(), WebhookActions: map[string]bool{"opened": true}}
 	h := NewHandler(cfg)
-	body := webhookJSON("opened", "org", "repo", 1, "title", "body")
+	body := webhookJSON("opened", "org", "repo", 1, "title", "please do this\n\nproduct-agent:comment")
 	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
 	req.Header.Set("X-GitHub-Event", "issues")
 	w := httptest.NewRecorder()
@@ -78,6 +78,19 @@ func TestHandlerWebhook_OpenedReturnsAccepted(t *testing.T) {
 	// assert the HTTP layer immediately returns 202.
 	if w.Code != http.StatusAccepted {
 		t.Errorf("expected 202, got %d", w.Code)
+	}
+}
+
+func TestHandlerWebhook_NoTriggerPhrase(t *testing.T) {
+	cfg := &Config{GitHubToken: "t", OpenAIKey: "k", OpenAIBaseURL: "http://localhost", OpenAIModel: "m", RepoPath: t.TempDir(), WebhookActions: map[string]bool{"opened": true}}
+	h := NewHandler(cfg)
+	body := webhookJSON("opened", "org", "repo", 1, "title", "just a regular issue with no trigger")
+	req := httptest.NewRequest(http.MethodPost, "/webhook", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issues")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("expected 204 when trigger phrase absent, got %d", w.Code)
 	}
 }
 

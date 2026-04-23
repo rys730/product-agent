@@ -88,7 +88,7 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Only act on configured actions (default: "opened").
+	// Only act on configured actions (default: "opened,edited").
 	action := extractAction(body)
 	if !h.cfg.WebhookActions[action] {
 		log.Printf("[handler] request_id=%s ignoring action: %s", requestID, action)
@@ -96,37 +96,13 @@ func (h *Handler) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// For "edited" actions, apply significance check — but only if the issue
-	// has already been processed before. If no agent comment exists yet,
-	// treat the edit as an implicit first-run and always process.
-	if action == "edited" {
-		// Allow the author to force a re-run by including the trigger phrase.
-		forceRun := strings.Contains(issue.Body, "product-agent:comment")
-
-		if forceRun {
-			log.Printf("[handler] request_id=%s force trigger found in issue body, processing", requestID)
-		} else {
-			ctx := r.Context()
-			hasComment, err := h.github.HasAgentComment(ctx, issue)
-			if err != nil {
-				log.Printf("[handler] request_id=%s could not check prior comments: %v — processing anyway", requestID, err)
-				hasComment = false
-			}
-
-			if hasComment {
-				oldText := parseOldText(body)
-				newText := issue.Title + " " + issue.Body
-				if !isSignificantEdit(oldText, newText) {
-					log.Printf("[handler] request_id=%s edit not significant, skipping", requestID)
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
-				log.Printf("[handler] request_id=%s significant edit detected, processing", requestID)
-			} else {
-				log.Printf("[handler] request_id=%s no prior agent comment — processing edited issue as first run", requestID)
-			}
-		}
+	// Primary gate: issue body must contain the trigger phrase.
+	if !strings.Contains(issue.Body, "product-agent:comment") {
+		log.Printf("[handler] request_id=%s trigger phrase not found, skipping", requestID)
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
+	log.Printf("[handler] request_id=%s trigger phrase found, processing", requestID)
 
 	log.Printf("[handler] request_id=%s processing issue %s/%s#%d: %q",
 		requestID, issue.Owner, issue.Repo, issue.Number, issue.Title)
